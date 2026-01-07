@@ -463,7 +463,6 @@
         const pos = getMousePos(evt);
         const width = canvas.width;
         const maxTime = parseFloat(inputs.scale.value);
-        const baseRpm = parseFloat(inputs.rpm.value);
 
         const geom = getRowGeometry(0);
 
@@ -471,7 +470,7 @@
             let t = ((pos.x - MARGIN.left) / (width - MARGIN.left - MARGIN.right)) * maxTime;
             t = Math.max(0, Math.min(maxTime, t));
 
-            const maxViewRpm = Math.max(3000, baseRpm * 2);
+            const maxViewRpm = 6000;
             const minViewRpm = 0;
 
             const plotHeight = geom.height - 20;
@@ -807,7 +806,7 @@
         const geom = getRowGeometry(0);
         const plotHeight = geom.height - 20;
 
-        const maxViewRpm = Math.max(3000, baseRpm * 2);
+        const maxViewRpm = 6000;
         const minViewRpm = 0;
 
         const topY = geom.top + 10;
@@ -1094,7 +1093,7 @@
         const yBase = geom.bottom - padding;
         const topY = geom.top + padding;
 
-        const maxViewRpm = Math.max(3000, targetRpm * 2);
+        const maxViewRpm = 6000;
         const minViewRpm = 0;
 
         function getY(val) {
