@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>回転数センサ タイミングチャート作成ツール v6</title>
+    <title>回転数センサ タイミングチャート作成ツール v7</title>
     <style>
         :root {
             --bg-color: #f4f4f9;
@@ -75,6 +75,24 @@
 
         .btn-success:hover {
             background-color: #1e7e34;
+        }
+
+        .btn-info {
+            background-color: #17a2b8;
+        }
+
+        .btn-info:hover {
+            background-color: #138496;
+        }
+
+        .toggle-btn {
+            background-color: #6c757d;
+            font-size: 0.75rem;
+            padding: 4px 8px;
+        }
+
+        .toggle-btn.active {
+            background-color: #28a745;
         }
 
         .container {
@@ -168,13 +186,77 @@
             opacity: 0.6;
             margin-top: 5px;
         }
+
+        /* Modal styles */
+        .modal-overlay {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.7);
+            z-index: 1000;
+            justify-content: center;
+            align-items: center;
+        }
+
+        .modal-overlay.show {
+            display: flex;
+        }
+
+        .modal-content {
+            background: var(--panel-bg);
+            color: var(--text-color);
+            padding: 30px;
+            border-radius: 12px;
+            max-width: 800px;
+            max-height: 80vh;
+            overflow-y: auto;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.3);
+        }
+
+        .modal-content h2 {
+            margin-top: 0;
+            border-bottom: 2px solid var(--accent-color);
+            padding-bottom: 10px;
+        }
+
+        .modal-content h3 {
+            color: var(--accent-color);
+            margin-top: 20px;
+        }
+
+        .modal-content pre {
+            background: var(--bg-color);
+            padding: 10px;
+            border-radius: 4px;
+            overflow-x: auto;
+            font-size: 0.9rem;
+        }
+
+        .modal-close {
+            float: right;
+            font-size: 1.5rem;
+            cursor: pointer;
+            color: var(--text-color);
+        }
+
+        .formula {
+            background: var(--bg-color);
+            padding: 8px 12px;
+            border-left: 3px solid var(--accent-color);
+            margin: 10px 0;
+            font-family: monospace;
+        }
     </style>
 </head>
 <body>
 
     <div class="header">
-        <h1>回転数センサ 制御フロー タイミングチャート v6</h1>
+        <h1>回転数センサ 制御フロー タイミングチャート v7</h1>
         <div class="header-buttons">
+            <button id="helpBtn" class="btn-info">処理説明</button>
             <button id="exportBtn" class="btn-success">PNG保存</button>
             <button id="darkModeBtn" class="btn-secondary">ダークモード</button>
         </div>
@@ -199,6 +281,10 @@
             <div class="control-group">
                 <label for="avgPulseInput">平均パルス数 (N)</label>
                 <input type="number" id="avgPulseInput" value="4" min="1" max="50">
+            </div>
+            <div class="control-group">
+                <label>平均方式</label>
+                <button id="avgModeBtn" class="toggle-btn active">A:固定N</button>
             </div>
             <div class="control-group">
                 <label for="timeScaleInput">表示時間幅 (ms)</label>
@@ -233,15 +319,60 @@
         </div>
     </div>
 
+    <!-- 説明モーダル -->
+    <div id="helpModal" class="modal-overlay">
+        <div class="modal-content">
+            <span class="modal-close" id="closeModal">&times;</span>
+            <h2>処理説明・物理式</h2>
+
+            <h3>1. パルス信号生成</h3>
+            <p>回転数センサは歯数Zのギアを検出し、1回転あたりZ個のパルスを出力します。</p>
+            <div class="formula">パルス周波数 f = (RPM × Z) / 60 [Hz]</div>
+            <div class="formula">パルス間隔 T = 60 / (RPM × Z) × 1000 [ms]</div>
+
+            <h3>2. フリーランカウンタ</h3>
+            <p>10ns分解能のカウンタが常時カウントアップ。約167.7msでオーバーフローして0にリセット。</p>
+            <div class="formula">最大値 = 167,772,150 (10ns単位) ≈ 167.7ms</div>
+
+            <h3>3. パルス平均時間の計算方式</h3>
+            <h4>方式A: 固定N個平均</h4>
+            <p>最新パルスから過去N個分のパルス間隔を平均します。</p>
+            <div class="formula">平均時間 = (最新エッジ時刻 - N個前エッジ時刻) / N</div>
+            <p><strong>特徴:</strong> 安定した出力、応答が遅い</p>
+
+            <h4>方式B: 処理周期内平均</h4>
+            <p>前回処理周期後の最初のパルスから、今回処理時点での最新パルスまでの時間を、その間のパルス数で割ります。</p>
+            <div class="formula">平均時間 = (最新エッジ時刻 - 前回周期後最初のエッジ時刻) / パルス数</div>
+            <p><strong>特徴:</strong> 応答が速い、変動が大きい</p>
+
+            <h3>4. 回転数の計算</h3>
+            <div class="formula">RPM = (1000 / 平均時間[ms]) × 60 / 歯数Z</div>
+
+            <h3>5. 一次遅れフィルタ</h3>
+            <p>ノイズ除去や急激な変動を抑制するためのローパスフィルタ。</p>
+            <div class="formula">y[n] = y[n-1] + α × (x[n] - y[n-1])</div>
+            <div class="formula">α = Δt / (τ + Δt)</div>
+            <p>τ: 時定数 (大きいほど滑らか、応答遅い)<br>Δt: サンプリング周期 (制御周期)</p>
+
+            <h3>6. 0rpm判定</h3>
+            <p>最新パルスから50ms以上経過した場合、停止と判定して0rpmを出力。</p>
+        </div>
+    </div>
+
 <script>
     const canvas = document.getElementById('chartCanvas');
     const ctx = canvas.getContext('2d');
     const resetBtn = document.getElementById('resetRpmBtn');
     const darkModeBtn = document.getElementById('darkModeBtn');
     const exportBtn = document.getElementById('exportBtn');
+    const helpBtn = document.getElementById('helpBtn');
+    const helpModal = document.getElementById('helpModal');
+    const closeModal = document.getElementById('closeModal');
+    const avgModeBtn = document.getElementById('avgModeBtn');
 
-    // Dark mode state
+    // State
     let isDarkMode = false;
+    let avgMode = 'A'; // 'A' = 固定N個, 'B' = 処理周期内平均
 
     // Inputs
     const inputs = {
@@ -273,10 +404,11 @@
     const MAX_COUNTER_NS = 167772150;
     const MAX_COUNTER_MS = MAX_COUNTER_NS / 1000000;
 
-    // State
+    // RPM Profile State
     let rpmProfile = [];
     let isDragging = false;
     let lastMousePos = null;
+    let lastProcessedPulseIndex = -1; // 方式B用: 前回処理周期で使用した最新パルスのインデックス
 
     // --- RPM Profile Management ---
 
@@ -412,7 +544,7 @@
         ctx.fillStyle = isDarkMode ? '#1e1e2f' : '#ffffff';
         ctx.fillRect(0, 0, width, totalHeight);
 
-        const simulationData = simulate(teeth, controlPeriod, avgCount, maxTime, filterTau);
+        const simulationData = simulate(teeth, controlPeriod, avgCount, maxTime, filterTau, avgMode);
 
         drawLayout(width, maxTime);
         drawInputRpm(width, maxTime, baseRpm);
@@ -424,7 +556,7 @@
         drawCalculatedRPM(simulationData.controlPoints, width, maxTime, baseRpm);
     }
 
-    function simulate(teeth, controlPeriod, avgCount, maxTime, filterTau) {
+    function simulate(teeth, controlPeriod, avgCount, maxTime, filterTau, mode) {
         let interrupts = [];
         let pulses = [];
 
@@ -478,9 +610,13 @@
 
         let controlPoints = [];
         let filteredRpm = startRpm; // 初期値
+        let lastPeriodLatestPulseIdx = -1; // 方式B用: 前回処理周期での最新パルスインデックス
 
         for (let t = 0; t <= maxTime; t += controlPeriod) {
-            const latestInterrupt = interrupts.filter(i => i.time <= t).pop();
+            // 現在時刻までのパルスを取得
+            const pulsesUntilNow = interrupts.filter(i => i.time <= t);
+            const latestInterrupt = pulsesUntilNow[pulsesUntilNow.length - 1];
+            const latestIdx = interrupts.indexOf(latestInterrupt);
 
             let calculatedPeriod = 0;
             let calculatedRpm = 0;
@@ -491,19 +627,51 @@
                 calculatedRpm = 0;
                 calculatedPeriod = 0;
             } else if (latestInterrupt) {
-                const targetPrevCount = latestInterrupt.count - avgCount;
-                const prevInterrupt = interrupts.find(i => i.count === targetPrevCount);
+                if (mode === 'A') {
+                    // 方式A: 固定N個平均
+                    const targetPrevCount = latestInterrupt.count - avgCount;
+                    const prevInterrupt = interrupts.find(i => i.count === targetPrevCount);
 
-                if (prevInterrupt) {
-                    const deltaTime = latestInterrupt.time - prevInterrupt.time;
-                    const avgTime = deltaTime / avgCount;
+                    if (prevInterrupt) {
+                        const deltaTime = latestInterrupt.time - prevInterrupt.time;
+                        const avgTime = deltaTime / avgCount;
 
-                    if (avgTime > 0) {
-                        calculatedPeriod = avgTime;
-                        calculatedRpm = (1000 / avgTime) * 60 / teeth;
+                        if (avgTime > 0) {
+                            calculatedPeriod = avgTime;
+                            calculatedRpm = (1000 / avgTime) * 60 / teeth;
+                        }
+                    }
+                } else {
+                    // 方式B: 処理周期内平均
+                    // 前回処理周期後の最初のパルスから最新パルスまで
+                    const startPulseIdx = lastPeriodLatestPulseIdx + 1;
+                    const pulseCount = latestIdx - startPulseIdx + 1;
+
+                    if (pulseCount >= 1 && startPulseIdx >= 0 && startPulseIdx < interrupts.length) {
+                        const startPulse = interrupts[startPulseIdx];
+                        const deltaTime = latestInterrupt.time - startPulse.time;
+
+                        if (pulseCount > 1 && deltaTime > 0) {
+                            const avgTime = deltaTime / (pulseCount - 1);
+                            calculatedPeriod = avgTime;
+                            calculatedRpm = (1000 / avgTime) * 60 / teeth;
+                        } else if (pulseCount === 1) {
+                            // パルスが1つしかない場合、前回の値を維持または直前のパルスとの間隔を使用
+                            if (startPulseIdx > 0) {
+                                const prevPulse = interrupts[startPulseIdx - 1];
+                                const singleDelta = startPulse.time - prevPulse.time;
+                                if (singleDelta > 0) {
+                                    calculatedPeriod = singleDelta;
+                                    calculatedRpm = (1000 / singleDelta) * 60 / teeth;
+                                }
+                            }
+                        }
                     }
                 }
             }
+
+            // 方式B: 現在の最新パルスインデックスを保存
+            lastPeriodLatestPulseIdx = latestIdx;
 
             // 一次遅れフィルタ: y[n] = y[n-1] + (dt/tau) * (x[n] - y[n-1])
             // alpha = dt / (tau + dt), where tau is time constant
@@ -968,6 +1136,29 @@
         link.download = 'timing-chart.png';
         link.href = canvas.toDataURL('image/png');
         link.click();
+    });
+
+    // Average mode toggle
+    avgModeBtn.addEventListener('click', () => {
+        avgMode = avgMode === 'A' ? 'B' : 'A';
+        avgModeBtn.textContent = avgMode === 'A' ? 'A:固定N' : 'B:周期内';
+        avgModeBtn.classList.toggle('active', avgMode === 'A');
+        draw();
+    });
+
+    // Help modal
+    helpBtn.addEventListener('click', () => {
+        helpModal.classList.add('show');
+    });
+
+    closeModal.addEventListener('click', () => {
+        helpModal.classList.remove('show');
+    });
+
+    helpModal.addEventListener('click', (e) => {
+        if (e.target === helpModal) {
+            helpModal.classList.remove('show');
+        }
     });
 
     initRpmProfile();
