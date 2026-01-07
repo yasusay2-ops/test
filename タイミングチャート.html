@@ -582,29 +582,41 @@
         const dt = 0.005;
 
         const startRpm = rpmProfile[0];
-        const startInterval = 1000 / ((startRpm * teeth) / 60);
 
-        for (let i = -1; i >= -avgCount - 5; i--) {
-             const t = i * startInterval;
-             const rawNs = t * 1000000;
-             let counterTimeVal = t % MAX_COUNTER_MS;
-             if (counterTimeVal < 0) counterTimeVal += MAX_COUNTER_MS;
+        // 0rpm時はパルスが発生しないので、初期パルスも生成しない
+        if (startRpm > 0) {
+            const startInterval = 1000 / ((startRpm * teeth) / 60);
 
-             interrupts.unshift({
-                 time: t,
-                 count: i + avgCount + 100,
-                 captureValue: counterTimeVal
-             });
+            for (let i = -1; i >= -avgCount - 5; i--) {
+                 const t = i * startInterval;
+                 const rawNs = t * 1000000;
+                 let counterTimeVal = t % MAX_COUNTER_MS;
+                 if (counterTimeVal < 0) counterTimeVal += MAX_COUNTER_MS;
+
+                 interrupts.unshift({
+                     time: t,
+                     count: i + avgCount + 100,
+                     captureValue: counterTimeVal
+                 });
+            }
+            pulses = [...interrupts];
         }
-        pulses = [...interrupts];
 
         let currentPhase = 0.0;
-        const lastPulseT = interrupts[interrupts.length - 1].time;
-        currentPhase = ((0 - lastPulseT) / startInterval);
-        let currentCount = interrupts[interrupts.length - 1].count;
+        let currentCount = interrupts.length > 0 ? interrupts[interrupts.length - 1].count : 100;
+
+        if (startRpm > 0 && interrupts.length > 0) {
+            const startInterval = 1000 / ((startRpm * teeth) / 60);
+            const lastPulseT = interrupts[interrupts.length - 1].time;
+            currentPhase = ((0 - lastPulseT) / startInterval);
+        }
 
         for (let t = 0; t <= maxTime; t += dt) {
             const currentRpm = getRpmAt(t);
+
+            // 0rpm以下ではパルスを生成しない
+            if (currentRpm <= 0) continue;
+
             const freq = (currentRpm * teeth) / 60000;
             const dPhase = freq * dt;
 
