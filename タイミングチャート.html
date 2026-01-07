@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>回転数センサ タイミングチャート作成ツール v4</title>
+    <title>回転数センサ タイミングチャート作成ツール v5</title>
     <style>
         :root {
             --bg-color: #f4f4f9;
@@ -11,6 +11,20 @@
             --text-color: #333;
             --border-color: #ddd;
             --accent-color: #007bff;
+            --canvas-bg: #ffffff;
+            --grid-color: #f5f5f5;
+            --plot-bg: #fafafa;
+        }
+
+        [data-theme="dark"] {
+            --bg-color: #1a1a2e;
+            --panel-bg: #16213e;
+            --text-color: #eaeaea;
+            --border-color: #0f3460;
+            --accent-color: #4dabf7;
+            --canvas-bg: #1e1e2f;
+            --grid-color: #2a2a3e;
+            --plot-bg: #252538;
         }
 
         body {
@@ -20,12 +34,47 @@
             background-color: var(--bg-color);
             color: var(--text-color);
             user-select: none;
+            transition: background-color 0.3s, color 0.3s;
         }
 
         h1 {
             font-size: 1.5rem;
             margin-bottom: 20px;
-            color: #444;
+            color: var(--text-color);
+        }
+
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+            gap: 10px;
+        }
+
+        .header h1 {
+            margin: 0;
+        }
+
+        .header-buttons {
+            display: flex;
+            gap: 10px;
+        }
+
+        .btn-secondary {
+            background-color: #6c757d;
+        }
+
+        .btn-secondary:hover {
+            background-color: #545b62;
+        }
+
+        .btn-success {
+            background-color: #28a745;
+        }
+
+        .btn-success:hover {
+            background-color: #1e7e34;
         }
 
         .container {
@@ -43,6 +92,7 @@
             grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
             gap: 15px;
             align-items: end;
+            transition: background-color 0.3s;
         }
 
         .control-group {
@@ -54,6 +104,7 @@
             font-size: 0.9rem;
             margin-bottom: 5px;
             font-weight: bold;
+            color: var(--text-color);
         }
 
         .control-group input {
@@ -61,6 +112,9 @@
             border: 1px solid var(--border-color);
             border-radius: 4px;
             font-size: 1rem;
+            background-color: var(--panel-bg);
+            color: var(--text-color);
+            transition: background-color 0.3s, color 0.3s, border-color 0.3s;
         }
 
         button {
@@ -84,10 +138,11 @@
             border-radius: 8px;
             box-shadow: 0 2px 5px rgba(0,0,0,0.1);
             overflow-x: hidden;
+            transition: background-color 0.3s;
         }
 
         canvas {
-            border: 1px solid #eee;
+            border: 1px solid var(--border-color);
             cursor: crosshair;
             display: block;
         }
@@ -95,20 +150,28 @@
         .legend {
             margin-top: 10px;
             font-size: 0.85rem;
-            color: #666;
+            color: var(--text-color);
             line-height: 1.6;
+            opacity: 0.8;
         }
-        
+
         .note {
             font-size: 0.8rem;
-            color: #888;
+            color: var(--text-color);
+            opacity: 0.6;
             margin-top: 5px;
         }
     </style>
 </head>
 <body>
 
-    <h1>回転数センサ 制御フロー タイミングチャート v4</h1>
+    <div class="header">
+        <h1>回転数センサ 制御フロー タイミングチャート v5</h1>
+        <div class="header-buttons">
+            <button id="exportBtn" class="btn-success">PNG保存</button>
+            <button id="darkModeBtn" class="btn-secondary">ダークモード</button>
+        </div>
+    </div>
 
     <div class="container">
         <!-- コントロールパネル -->
@@ -162,6 +225,11 @@
     const canvas = document.getElementById('chartCanvas');
     const ctx = canvas.getContext('2d');
     const resetBtn = document.getElementById('resetRpmBtn');
+    const darkModeBtn = document.getElementById('darkModeBtn');
+    const exportBtn = document.getElementById('exportBtn');
+
+    // Dark mode state
+    let isDarkMode = false;
 
     // Inputs
     const inputs = {
@@ -175,10 +243,10 @@
     // Constants for Layout
     const MARGIN = { top: 30, right: 30, bottom: 20, left: 160 };
     const DEFAULT_ROW_HEIGHT = 70;
-    
+
     // Row Configuration with custom heights
     const ROWS = [
-        { id: 'inputRpm', label: '0. 入力回転数 (操作可)', editable: true, height: 150 }, // Height expanded
+        { id: 'inputRpm', label: '0. 入力回転数 (操作可)', editable: true, height: 150 },
         { id: 'pulse', label: '1. パルス信号' },
         { id: 'freeRun', label: '2. フリーランカウンタ' },
         { id: 'capture', label: '3. パルスエッジ検出時刻' },
@@ -203,7 +271,7 @@
         const maxTime = parseFloat(inputs.scale.value);
         const baseRpm = parseFloat(inputs.rpm.value);
         const length = Math.ceil(maxTime) + 1;
-        
+
         if (rpmProfile.length !== length) {
             rpmProfile = new Array(length).fill(baseRpm);
         }
@@ -232,28 +300,22 @@
         const width = canvas.width;
         const maxTime = parseFloat(inputs.scale.value);
         const baseRpm = parseFloat(inputs.rpm.value);
-        
-        // Use helper to get geometry for row 0
+
         const geom = getRowGeometry(0);
-        
-        // Check if within Input RPM row (with some margin)
+
         if (pos.y >= geom.top && pos.y <= geom.bottom && pos.x >= MARGIN.left && pos.x <= width - MARGIN.right) {
-            
-            // X to Time index
             let t = ((pos.x - MARGIN.left) / (width - MARGIN.left - MARGIN.right)) * maxTime;
             t = Math.max(0, Math.min(maxTime, t));
 
-            // Y to RPM
             const maxViewRpm = Math.max(3000, baseRpm * 2);
             const minViewRpm = 0;
-            
-            // Use internal drawing height (excluding padding)
+
             const plotHeight = geom.height - 20;
             const plotBottom = geom.bottom - 10;
-            
+
             let rpm = ((plotBottom - pos.y) / plotHeight) * (maxViewRpm - minViewRpm) + minViewRpm;
             rpm = Math.max(minViewRpm, Math.min(maxViewRpm, rpm));
-            
+
             return { t, rpm };
         }
         return null;
@@ -272,14 +334,14 @@
     canvas.addEventListener('mousemove', (e) => {
         if (!isDragging) return;
         const input = handleInput(e);
-        
+
         if (input) {
             if (lastMousePos) {
                 const startT = Math.min(lastMousePos.t, input.t);
                 const endT = Math.max(lastMousePos.t, input.t);
                 const startRpm = lastMousePos.t < input.t ? lastMousePos.rpm : input.rpm;
                 const endRpm = lastMousePos.t < input.t ? input.rpm : lastMousePos.rpm;
-                
+
                 const steps = Math.ceil(endT - startT);
                 for (let t = Math.ceil(startT); t <= Math.floor(endT); t++) {
                      const ratio = (t - startT) / (endT - startT || 1);
@@ -294,7 +356,7 @@
     });
 
     window.addEventListener('mouseup', () => { isDragging = false; lastMousePos = null; });
-    
+
     function updateProfile(t, rpm) {
         const idx = Math.round(t);
         if (idx >= 0 && idx < rpmProfile.length) {
@@ -325,22 +387,19 @@
              resetRpmProfile();
         }
 
-        // Calculate total height dynamically
         const totalContentHeight = ROWS.reduce((sum, row) => sum + (row.height || DEFAULT_ROW_HEIGHT), 0);
         const totalHeight = MARGIN.top + MARGIN.bottom + totalContentHeight;
-        
+
         const width = canvas.parentElement.clientWidth - 40;
         canvas.width = width;
         canvas.height = totalHeight;
 
         ctx.clearRect(0, 0, width, totalHeight);
-        ctx.fillStyle = '#ffffff';
+        ctx.fillStyle = isDarkMode ? '#1e1e2f' : '#ffffff';
         ctx.fillRect(0, 0, width, totalHeight);
 
-        // Simulation
         const simulationData = simulate(teeth, controlPeriod, avgCount, maxTime);
 
-        // Drawing
         drawLayout(width, maxTime);
         drawInputRpm(width, maxTime, baseRpm);
         drawPulse(simulationData.pulses, width, maxTime);
@@ -354,19 +413,18 @@
     function simulate(teeth, controlPeriod, avgCount, maxTime) {
         let interrupts = [];
         let pulses = [];
-        
-        const dt = 0.005; // 5us
-        
-        // History buffer
+
+        const dt = 0.005;
+
         const startRpm = rpmProfile[0];
         const startInterval = 1000 / ((startRpm * teeth) / 60);
-        
+
         for (let i = -1; i >= -avgCount - 5; i--) {
              const t = i * startInterval;
              const rawNs = t * 1000000;
              let counterTimeVal = t % MAX_COUNTER_MS;
              if (counterTimeVal < 0) counterTimeVal += MAX_COUNTER_MS;
-             
+
              interrupts.unshift({
                  time: t,
                  count: i + avgCount + 100,
@@ -375,8 +433,7 @@
         }
         pulses = [...interrupts];
 
-        // Forward Simulation
-        let currentPhase = 0.0; 
+        let currentPhase = 0.0;
         const lastPulseT = interrupts[interrupts.length - 1].time;
         currentPhase = ((0 - lastPulseT) / startInterval);
         let currentCount = interrupts[interrupts.length - 1].count;
@@ -385,16 +442,16 @@
             const currentRpm = getRpmAt(t);
             const freq = (currentRpm * teeth) / 60000;
             const dPhase = freq * dt;
-            
+
             const prevPhase = currentPhase;
             currentPhase += dPhase;
-            
+
             if (Math.floor(currentPhase) > Math.floor(prevPhase)) {
                 const fraction = (Math.ceil(prevPhase) - prevPhase) / dPhase;
                 const exactTime = t + fraction * dt;
                 currentCount++;
                 const captureValue = exactTime % MAX_COUNTER_MS;
-                
+
                 const event = {
                     time: exactTime,
                     count: currentCount,
@@ -404,32 +461,27 @@
                 pulses.push(event);
             }
         }
-        
-        // Control Loop with 0 RPM logic
+
         let controlPoints = [];
         for (let t = 0; t <= maxTime; t += controlPeriod) {
             const latestInterrupt = interrupts.filter(i => i.time <= t).pop();
-            
+
             let calculatedPeriod = 0;
             let calculatedRpm = 0;
 
-            // 0 RPM Timeout Logic
-            // If time since last pulse > 50ms, then RPM is 0.
             const timeSinceLastPulse = latestInterrupt ? (t - latestInterrupt.time) : 999;
 
             if (timeSinceLastPulse > 50) {
-                // Timeout! 0 RPM.
                 calculatedRpm = 0;
-                calculatedPeriod = 0; // Or indicate timeout
+                calculatedPeriod = 0;
             } else if (latestInterrupt) {
-                // Normal Calculation
                 const targetPrevCount = latestInterrupt.count - avgCount;
                 const prevInterrupt = interrupts.find(i => i.count === targetPrevCount);
 
                 if (prevInterrupt) {
                     const deltaTime = latestInterrupt.time - prevInterrupt.time;
                     const avgTime = deltaTime / avgCount;
-                    
+
                     if (avgTime > 0) {
                         calculatedPeriod = avgTime;
                         calculatedRpm = (1000 / avgTime) * 60 / teeth;
@@ -443,7 +495,7 @@
                 rpm: calculatedRpm
             });
         }
-        
+
         const visiblePulses = pulses.filter(i => i.time >= -startInterval * (avgCount+2) && i.time <= maxTime);
 
         return {
@@ -459,7 +511,6 @@
         return MARGIN.left + (t / maxTime) * (width - MARGIN.left - MARGIN.right);
     }
 
-    // Calculates vertical position info for a row
     function getRowGeometry(rowIndex) {
         let currentY = MARGIN.top;
         for (let i = 0; i < rowIndex; i++) {
@@ -487,18 +538,16 @@
         ROWS.forEach((row, index) => {
             const geom = getRowGeometry(index);
             const y = geom.top;
-            
-            // Separator (Top of row)
+
             ctx.beginPath();
             ctx.moveTo(MARGIN.left, y);
             ctx.lineTo(width - MARGIN.right, y);
-            ctx.strokeStyle = '#ddd';
+            ctx.strokeStyle = isDarkMode ? '#3a3a5e' : '#ddd';
             ctx.stroke();
 
-            // Label
-            ctx.fillStyle = row.editable ? '#007bff' : '#333';
+            ctx.fillStyle = row.editable ? (isDarkMode ? '#4dabf7' : '#007bff') : (isDarkMode ? '#eaeaea' : '#333');
             ctx.fillText(row.label, MARGIN.left - 10, geom.center);
-            
+
             if (row.editable) {
                  ctx.font = '10px Arial';
                  ctx.fillText("(ドラッグで編集)", MARGIN.left - 10, geom.center + 12);
@@ -506,55 +555,51 @@
             }
         });
 
-        // Bottom border
         const lastGeom = getRowGeometry(ROWS.length - 1);
         const bottomY = lastGeom.bottom;
         ctx.beginPath();
         ctx.moveTo(MARGIN.left, bottomY);
         ctx.lineTo(width - MARGIN.right, bottomY);
-        ctx.strokeStyle = '#ddd';
+        ctx.strokeStyle = isDarkMode ? '#3a3a5e' : '#ddd';
         ctx.stroke();
 
-        // Grid & X Labels
         ctx.textAlign = 'center';
         ctx.textBaseline = 'top';
         const steps = 10;
         for (let i = 0; i <= steps; i++) {
             const t = (maxTime / steps) * i;
             const x = timeToX(t, width, maxTime);
-            
+
             ctx.beginPath();
             ctx.moveTo(x, MARGIN.top);
             ctx.lineTo(x, bottomY);
-            ctx.strokeStyle = '#f5f5f5';
+            ctx.strokeStyle = isDarkMode ? '#2a2a3e' : '#f5f5f5';
             ctx.stroke();
 
-            ctx.fillStyle = '#666';
+            ctx.fillStyle = isDarkMode ? '#aaa' : '#666';
             ctx.fillText(Math.round(t) + 'ms', x, bottomY + 5);
         }
     }
 
     function drawInputRpm(width, maxTime, baseRpm) {
         const geom = getRowGeometry(0);
-        const plotHeight = geom.height - 20; // Padding
-        
+        const plotHeight = geom.height - 20;
+
         const maxViewRpm = Math.max(3000, baseRpm * 2);
         const minViewRpm = 0;
-        
-        // Draw Bg
+
         const topY = geom.top + 10;
         const bottomY = geom.bottom - 10;
-        
-        ctx.fillStyle = '#fafafa';
+
+        ctx.fillStyle = isDarkMode ? '#252538' : '#fafafa';
         ctx.fillRect(MARGIN.left, topY, width - MARGIN.left - MARGIN.right, plotHeight);
 
         const getY = (rpm) => bottomY - ((rpm - minViewRpm) / (maxViewRpm - minViewRpm)) * plotHeight;
 
-        // Draw Profile
         ctx.beginPath();
-        ctx.strokeStyle = '#007bff';
+        ctx.strokeStyle = isDarkMode ? '#4dabf7' : '#007bff';
         ctx.lineWidth = 2;
-        
+
         for (let t = 0; t <= maxTime; t++) {
              const x = timeToX(t, width, maxTime);
              const rpm = rpmProfile[t] || baseRpm;
@@ -563,26 +608,23 @@
              else ctx.lineTo(x, y);
         }
         ctx.stroke();
-        
-        // Draw Base RPM Line
+
         const yBaseLine = getY(baseRpm);
         ctx.beginPath();
-        ctx.strokeStyle = '#ccc';
+        ctx.strokeStyle = isDarkMode ? '#555' : '#ccc';
         ctx.setLineDash([2, 4]);
         ctx.moveTo(MARGIN.left, yBaseLine);
         ctx.lineTo(width - MARGIN.right, yBaseLine);
         ctx.stroke();
         ctx.setLineDash([]);
-        
-        // Max/Min labels
-        ctx.fillStyle = '#999';
+
+        ctx.fillStyle = isDarkMode ? '#aaa' : '#999';
         ctx.font = '9px Arial';
         ctx.textAlign = 'right';
         ctx.fillText(Math.round(maxViewRpm) + ' rpm', MARGIN.left - 5, topY + 5);
         ctx.fillText('0 rpm', MARGIN.left - 5, bottomY - 5);
     }
 
-    // 1. Pulse
     function drawPulse(data, width, maxTime) {
         const geom = getRowGeometry(1);
         const yBase = geom.center;
@@ -613,7 +655,7 @@
             if (p.time > maxTime) return;
             const x = timeToX(p.time, width, maxTime);
             if (x >= MARGIN.left && x <= width - MARGIN.right) {
-                ctx.fillStyle = 'red';
+                ctx.fillStyle = '#ff6b6b';
                 ctx.beginPath();
                 ctx.arc(x, yBase - h, 3, 0, Math.PI * 2);
                 ctx.fill();
@@ -621,16 +663,15 @@
         });
     }
 
-    // 2. Free Run
     function drawFreeRunCounter(width, maxTime) {
         const geom = getRowGeometry(2);
         const yBase = geom.center;
         const h = geom.height / 2 - 10;
-        
+
         ctx.beginPath();
-        ctx.strokeStyle = '#999';
+        ctx.strokeStyle = isDarkMode ? '#888' : '#999';
         ctx.lineWidth = 1;
-        
+
         let t = 0;
         ctx.beginPath();
         while (t <= maxTime) {
@@ -638,65 +679,62 @@
             let nextReset = (Math.floor(t / MAX_COUNTER_MS) + 1) * MAX_COUNTER_MS;
             let segmentEnd = Math.min(maxTime, nextReset);
             const xEnd = timeToX(segmentEnd, width, maxTime);
-            
+
             const valStart = t % MAX_COUNTER_MS;
             const yStart = yBase + h - (valStart / MAX_COUNTER_MS) * (2 * h);
             const yEnd = yBase + h - ((segmentEnd - t + valStart) / MAX_COUNTER_MS) * (2 * h);
 
             ctx.moveTo(xStart, yStart);
             ctx.lineTo(xEnd, yEnd);
-            
+
             if (segmentEnd === nextReset && segmentEnd <= maxTime) {
                  ctx.lineTo(xEnd, yBase + h);
             }
             t = segmentEnd;
             if (t >= maxTime) break;
-            t += 0.0001; 
+            t += 0.0001;
         }
         ctx.stroke();
     }
 
-    // 3. Capture Time
     function drawCaptureTime(data, width, maxTime) {
         const geom = getRowGeometry(3);
         const yBase = geom.center;
         const h = geom.height / 2 - 10;
-        
+
         ctx.font = '10px monospace';
         ctx.textAlign = 'center';
-        
+
         data.forEach(p => {
             if (p.time >= 0 && p.time <= maxTime) {
                 const x = timeToX(p.time, width, maxTime);
                 const y = yBase + h - (p.captureValue / MAX_COUNTER_MS) * (2 * h);
-                
+
                 ctx.beginPath();
-                ctx.fillStyle = '#007bff';
+                ctx.fillStyle = isDarkMode ? '#4dabf7' : '#007bff';
                 ctx.arc(x, y, 3, 0, Math.PI * 2);
                 ctx.fill();
-                
+
                 ctx.beginPath();
                 ctx.moveTo(x, y);
                 ctx.lineTo(x, yBase + h + 5);
-                ctx.strokeStyle = 'rgba(0, 123, 255, 0.3)';
+                ctx.strokeStyle = isDarkMode ? 'rgba(77, 171, 247, 0.3)' : 'rgba(0, 123, 255, 0.3)';
                 ctx.setLineDash([2, 2]);
                 ctx.stroke();
                 ctx.setLineDash([]);
-                
-                // Shift text down to avoid overlap if possible, but these points are sparse
-                ctx.fillStyle = '#333';
+
+                ctx.fillStyle = isDarkMode ? '#ddd' : '#333';
                 ctx.fillText(p.captureValue.toFixed(1), x, yBase + h + 12);
             }
         });
     }
 
-    // 4. Counter
     function drawCounter(data, width, maxTime) {
         const geom = getRowGeometry(4);
         const padding = 15;
         const plotHeight = geom.height - padding * 2;
         const yBase = geom.bottom - padding;
-        
+
         if (data.length === 0) return;
         const getY = (count) => yBase - ((count % 10) / 10) * plotHeight;
 
@@ -707,7 +745,7 @@
         let firstVisible = data.find(p => p.time >= 0);
         let startIndex = data.indexOf(firstVisible);
         let prevCount = (startIndex > 0) ? data[startIndex - 1].count : data[0].count;
-        
+
         ctx.moveTo(MARGIN.left, getY(prevCount));
 
         data.forEach(p => {
@@ -724,22 +762,20 @@
         ctx.lineTo(width - MARGIN.right, getY(data[data.length-1].count));
         ctx.stroke();
 
-        ctx.fillStyle = '#333';
+        ctx.fillStyle = isDarkMode ? '#ddd' : '#333';
         ctx.font = '10px Arial';
-        ctx.textAlign = 'left'; 
+        ctx.textAlign = 'left';
         data.forEach(p => {
             if (p.time > maxTime) return;
             if (p.time < 0) return;
             const x = timeToX(p.time, width, maxTime);
             const yNext = getY(p.count);
-            
-            // Adjust text position: move up and right to avoid line
+
             ctx.fillText(p.count, x + 3, yNext - 5);
         });
-        ctx.textAlign = 'center'; // Reset
+        ctx.textAlign = 'center';
     }
 
-    // 5. Avg Time
     function drawAvgTime(data, width, maxTime) {
         const geom = getRowGeometry(5);
         const yBase = geom.center;
@@ -753,19 +789,16 @@
             const p = data[i];
             const x = timeToX(p.time, width, maxTime);
             let nextX = (i < data.length - 1) ? timeToX(data[i+1].time, width, maxTime) : width - MARGIN.right;
-            
-            // Grid line
+
             ctx.beginPath();
-            ctx.strokeStyle = 'rgba(0, 0, 255, 0.3)';
+            ctx.strokeStyle = isDarkMode ? 'rgba(100, 100, 255, 0.3)' : 'rgba(0, 0, 255, 0.3)';
             ctx.setLineDash([4, 4]);
             ctx.moveTo(x, MARGIN.top);
-            // Draw all the way down
             const lastGeom = getRowGeometry(ROWS.length - 1);
             ctx.lineTo(x, lastGeom.bottom);
             ctx.stroke();
             ctx.setLineDash([]);
-            
-            // Value line
+
             ctx.beginPath();
             ctx.strokeStyle = '#9c27b0';
             ctx.lineWidth = 2;
@@ -773,7 +806,6 @@
             ctx.lineTo(nextX, yBase);
             ctx.stroke();
 
-            // Text: Display above the line
             if (x < width - MARGIN.right) {
                 ctx.fillStyle = '#9c27b0';
                 ctx.font = '11px Arial';
@@ -784,17 +816,16 @@
         ctx.textAlign = 'center';
     }
 
-    // 6. Calc RPM
     function drawCalculatedRPM(data, width, maxTime, targetRpm) {
         const geom = getRowGeometry(6);
         const padding = 15;
         const plotHeight = geom.height - padding * 2;
         const yBase = geom.bottom - padding;
-        
+
         const maxViewRpm = Math.max(3000, targetRpm * 2);
         const minViewRpm = 0;
 
-        ctx.strokeStyle = '#007bff';
+        ctx.strokeStyle = isDarkMode ? '#4dabf7' : '#007bff';
         ctx.lineWidth = 2;
 
         function getY(val) {
@@ -817,9 +848,8 @@
             if (i===0) ctx.lineTo(x, y);
             ctx.lineTo(nextX, y);
             ctx.lineTo(nextX, nextY);
-            
-            // Text: Display above the line
-            ctx.fillStyle = '#007bff';
+
+            ctx.fillStyle = isDarkMode ? '#4dabf7' : '#007bff';
             ctx.textAlign = 'left';
             ctx.fillText(Math.round(p.rpm), x + 5, y - 8);
         }
@@ -832,10 +862,26 @@
         if (input === inputs.scale) initRpmProfile();
         draw();
     }));
-    
+
     resetBtn.addEventListener('click', resetRpmProfile);
     window.addEventListener('resize', draw);
-    
+
+    // Dark mode toggle
+    darkModeBtn.addEventListener('click', () => {
+        isDarkMode = !isDarkMode;
+        document.documentElement.setAttribute('data-theme', isDarkMode ? 'dark' : 'light');
+        darkModeBtn.textContent = isDarkMode ? 'ライトモード' : 'ダークモード';
+        draw();
+    });
+
+    // PNG Export
+    exportBtn.addEventListener('click', () => {
+        const link = document.createElement('a');
+        link.download = 'timing-chart.png';
+        link.href = canvas.toDataURL('image/png');
+        link.click();
+    });
+
     initRpmProfile();
     draw();
 
