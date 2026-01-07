@@ -1,0 +1,844 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>回転数センサ タイミングチャート作成ツール v4</title>
+    <style>
+        :root {
+            --bg-color: #f4f4f9;
+            --panel-bg: #ffffff;
+            --text-color: #333;
+            --border-color: #ddd;
+            --accent-color: #007bff;
+        }
+
+        body {
+            font-family: "Helvetica Neue", Arial, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            user-select: none;
+        }
+
+        h1 {
+            font-size: 1.5rem;
+            margin-bottom: 20px;
+            color: #444;
+        }
+
+        .container {
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+
+        .controls {
+            background: var(--panel-bg);
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            align-items: end;
+        }
+
+        .control-group {
+            display: flex;
+            flex-direction: column;
+        }
+
+        .control-group label {
+            font-size: 0.9rem;
+            margin-bottom: 5px;
+            font-weight: bold;
+        }
+
+        .control-group input {
+            padding: 8px;
+            border: 1px solid var(--border-color);
+            border-radius: 4px;
+            font-size: 1rem;
+        }
+
+        button {
+            padding: 10px 15px;
+            background-color: var(--accent-color);
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 1rem;
+            transition: background 0.2s;
+        }
+
+        button:hover {
+            background-color: #0056b3;
+        }
+
+        .chart-container {
+            background: var(--panel-bg);
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+            overflow-x: hidden;
+        }
+
+        canvas {
+            border: 1px solid #eee;
+            cursor: crosshair;
+            display: block;
+        }
+
+        .legend {
+            margin-top: 10px;
+            font-size: 0.85rem;
+            color: #666;
+            line-height: 1.6;
+        }
+        
+        .note {
+            font-size: 0.8rem;
+            color: #888;
+            margin-top: 5px;
+        }
+    </style>
+</head>
+<body>
+
+    <h1>回転数センサ 制御フロー タイミングチャート v4</h1>
+
+    <div class="container">
+        <!-- コントロールパネル -->
+        <div class="controls">
+            <div class="control-group">
+                <label for="rpmInput">初期回転数 (RPM)</label>
+                <input type="number" id="rpmInput" value="1200" min="10" max="20000" step="10">
+                <span class="note">ベースラインおよびリセット時の値</span>
+            </div>
+            <div class="control-group">
+                <label for="teethInput">歯数 (パルス/回転)</label>
+                <input type="number" id="teethInput" value="24" min="1" max="360">
+            </div>
+            <div class="control-group">
+                <label for="controlPeriodInput">制御周期 (ms)</label>
+                <input type="number" id="controlPeriodInput" value="10" min="1" max="100">
+            </div>
+            <div class="control-group">
+                <label for="avgPulseInput">平均パルス数 (N)</label>
+                <input type="number" id="avgPulseInput" value="4" min="1" max="50">
+            </div>
+            <div class="control-group">
+                <label for="timeScaleInput">表示時間幅 (ms)</label>
+                <input type="number" id="timeScaleInput" value="100" min="10" max="1000">
+            </div>
+            <div class="control-group">
+                <button id="resetRpmBtn">回転数リセット</button>
+            </div>
+        </div>
+
+        <!-- チャート描画エリア -->
+        <div class="chart-container">
+            <canvas id="chartCanvas"></canvas>
+            <div class="legend">
+                <strong>操作方法:</strong><br>
+                一番上の「入力回転数」グラフエリアをマウスでドラッグすると、回転数プロファイルを手動で変更できます。<br>
+                <br>
+                <strong>凡例:</strong><br>
+                0. 入力回転数: シミュレーション入力 (手動編集可)<br>
+                1. パルス信号: センサ入力 (立上がりエッジ検出)<br>
+                2. フリーランカウンタ: 10ns毎カウントUP (最大約167.7msで0リセット)<br>
+                3. エッジ検出時刻: 割込発生瞬間のフリーランカウンタ値<br>
+                4. 累積カウンター: 受信パルス総数 (ステップ表示)<br>
+                5. パルス平均時間: 制御周期毎に算出<br>
+                6. 計算回転数: 制御周期毎に更新 (50msパルス無しで0rpm判定)
+            </div>
+        </div>
+    </div>
+
+<script>
+    const canvas = document.getElementById('chartCanvas');
+    const ctx = canvas.getContext('2d');
+    const resetBtn = document.getElementById('resetRpmBtn');
+
+    // Inputs
+    const inputs = {
+        rpm: document.getElementById('rpmInput'),
+        teeth: document.getElementById('teethInput'),
+        period: document.getElementById('controlPeriodInput'),
+        avg: document.getElementById('avgPulseInput'),
+        scale: document.getElementById('timeScaleInput')
+    };
+
+    // Constants for Layout
+    const MARGIN = { top: 30, right: 30, bottom: 20, left: 160 };
+    const DEFAULT_ROW_HEIGHT = 70;
+    
+    // Row Configuration with custom heights
+    const ROWS = [
+        { id: 'inputRpm', label: '0. 入力回転数 (操作可)', editable: true, height: 150 }, // Height expanded
+        { id: 'pulse', label: '1. パルス信号' },
+        { id: 'freeRun', label: '2. フリーランカウンタ' },
+        { id: 'capture', label: '3. パルスエッジ検出時刻' },
+        { id: 'count', label: '4. 累積カウンター' },
+        { id: 'avgTime', label: '5. パルス平均時間 (ms)' },
+        { id: 'calcRpm', label: '6. 計算回転数 (RPM)' }
+    ];
+
+    // Counter Specs
+    const COUNTER_RES_NS = 10;
+    const MAX_COUNTER_NS = 167772150;
+    const MAX_COUNTER_MS = MAX_COUNTER_NS / 1000000;
+
+    // State
+    let rpmProfile = [];
+    let isDragging = false;
+    let lastMousePos = null;
+
+    // --- RPM Profile Management ---
+
+    function initRpmProfile() {
+        const maxTime = parseFloat(inputs.scale.value);
+        const baseRpm = parseFloat(inputs.rpm.value);
+        const length = Math.ceil(maxTime) + 1;
+        
+        if (rpmProfile.length !== length) {
+            rpmProfile = new Array(length).fill(baseRpm);
+        }
+    }
+
+    function resetRpmProfile() {
+        const maxTime = parseFloat(inputs.scale.value);
+        const baseRpm = parseFloat(inputs.rpm.value);
+        const length = Math.ceil(maxTime) + 1;
+        rpmProfile = new Array(length).fill(baseRpm);
+        draw();
+    }
+
+    // --- Interactive RPM Editing ---
+
+    function getMousePos(evt) {
+        const rect = canvas.getBoundingClientRect();
+        return {
+            x: evt.clientX - rect.left,
+            y: evt.clientY - rect.top
+        };
+    }
+
+    function handleInput(evt) {
+        const pos = getMousePos(evt);
+        const width = canvas.width;
+        const maxTime = parseFloat(inputs.scale.value);
+        const baseRpm = parseFloat(inputs.rpm.value);
+        
+        // Use helper to get geometry for row 0
+        const geom = getRowGeometry(0);
+        
+        // Check if within Input RPM row (with some margin)
+        if (pos.y >= geom.top && pos.y <= geom.bottom && pos.x >= MARGIN.left && pos.x <= width - MARGIN.right) {
+            
+            // X to Time index
+            let t = ((pos.x - MARGIN.left) / (width - MARGIN.left - MARGIN.right)) * maxTime;
+            t = Math.max(0, Math.min(maxTime, t));
+
+            // Y to RPM
+            const maxViewRpm = Math.max(3000, baseRpm * 2);
+            const minViewRpm = 0;
+            
+            // Use internal drawing height (excluding padding)
+            const plotHeight = geom.height - 20;
+            const plotBottom = geom.bottom - 10;
+            
+            let rpm = ((plotBottom - pos.y) / plotHeight) * (maxViewRpm - minViewRpm) + minViewRpm;
+            rpm = Math.max(minViewRpm, Math.min(maxViewRpm, rpm));
+            
+            return { t, rpm };
+        }
+        return null;
+    }
+
+    canvas.addEventListener('mousedown', (e) => {
+        const input = handleInput(e);
+        if (input) {
+            isDragging = true;
+            updateProfile(input.t, input.rpm);
+            lastMousePos = input;
+            draw();
+        }
+    });
+
+    canvas.addEventListener('mousemove', (e) => {
+        if (!isDragging) return;
+        const input = handleInput(e);
+        
+        if (input) {
+            if (lastMousePos) {
+                const startT = Math.min(lastMousePos.t, input.t);
+                const endT = Math.max(lastMousePos.t, input.t);
+                const startRpm = lastMousePos.t < input.t ? lastMousePos.rpm : input.rpm;
+                const endRpm = lastMousePos.t < input.t ? input.rpm : lastMousePos.rpm;
+                
+                const steps = Math.ceil(endT - startT);
+                for (let t = Math.ceil(startT); t <= Math.floor(endT); t++) {
+                     const ratio = (t - startT) / (endT - startT || 1);
+                     const interpRpm = startRpm + (endRpm - startRpm) * ratio;
+                     updateProfile(t, interpRpm);
+                }
+            }
+            updateProfile(input.t, input.rpm);
+            lastMousePos = input;
+            draw();
+        }
+    });
+
+    window.addEventListener('mouseup', () => { isDragging = false; lastMousePos = null; });
+    
+    function updateProfile(t, rpm) {
+        const idx = Math.round(t);
+        if (idx >= 0 && idx < rpmProfile.length) {
+            rpmProfile[idx] = rpm;
+        }
+    }
+
+    function getRpmAt(t) {
+        const idx = Math.floor(t);
+        const nextIdx = Math.min(rpmProfile.length - 1, idx + 1);
+        const ratio = t - idx;
+        const v1 = rpmProfile[Math.min(idx, rpmProfile.length-1)] || rpmProfile[0];
+        const v2 = rpmProfile[nextIdx] || v1;
+        return v1 + (v2 - v1) * ratio;
+    }
+
+
+    // --- Main Logic ---
+
+    function draw() {
+        const teeth = parseInt(inputs.teeth.value);
+        const controlPeriod = parseFloat(inputs.period.value);
+        const avgCount = parseInt(inputs.avg.value);
+        const maxTime = parseFloat(inputs.scale.value);
+        const baseRpm = parseFloat(inputs.rpm.value);
+
+        if (!rpmProfile.length || Math.abs(rpmProfile.length - (Math.ceil(maxTime)+1)) > 2) {
+             resetRpmProfile();
+        }
+
+        // Calculate total height dynamically
+        const totalContentHeight = ROWS.reduce((sum, row) => sum + (row.height || DEFAULT_ROW_HEIGHT), 0);
+        const totalHeight = MARGIN.top + MARGIN.bottom + totalContentHeight;
+        
+        const width = canvas.parentElement.clientWidth - 40;
+        canvas.width = width;
+        canvas.height = totalHeight;
+
+        ctx.clearRect(0, 0, width, totalHeight);
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, width, totalHeight);
+
+        // Simulation
+        const simulationData = simulate(teeth, controlPeriod, avgCount, maxTime);
+
+        // Drawing
+        drawLayout(width, maxTime);
+        drawInputRpm(width, maxTime, baseRpm);
+        drawPulse(simulationData.pulses, width, maxTime);
+        drawFreeRunCounter(width, maxTime);
+        drawCaptureTime(simulationData.interrupts, width, maxTime);
+        drawCounter(simulationData.interrupts, width, maxTime);
+        drawAvgTime(simulationData.controlPoints, width, maxTime);
+        drawCalculatedRPM(simulationData.controlPoints, width, maxTime, baseRpm);
+    }
+
+    function simulate(teeth, controlPeriod, avgCount, maxTime) {
+        let interrupts = [];
+        let pulses = [];
+        
+        const dt = 0.005; // 5us
+        
+        // History buffer
+        const startRpm = rpmProfile[0];
+        const startInterval = 1000 / ((startRpm * teeth) / 60);
+        
+        for (let i = -1; i >= -avgCount - 5; i--) {
+             const t = i * startInterval;
+             const rawNs = t * 1000000;
+             let counterTimeVal = t % MAX_COUNTER_MS;
+             if (counterTimeVal < 0) counterTimeVal += MAX_COUNTER_MS;
+             
+             interrupts.unshift({
+                 time: t,
+                 count: i + avgCount + 100,
+                 captureValue: counterTimeVal
+             });
+        }
+        pulses = [...interrupts];
+
+        // Forward Simulation
+        let currentPhase = 0.0; 
+        const lastPulseT = interrupts[interrupts.length - 1].time;
+        currentPhase = ((0 - lastPulseT) / startInterval);
+        let currentCount = interrupts[interrupts.length - 1].count;
+
+        for (let t = 0; t <= maxTime; t += dt) {
+            const currentRpm = getRpmAt(t);
+            const freq = (currentRpm * teeth) / 60000;
+            const dPhase = freq * dt;
+            
+            const prevPhase = currentPhase;
+            currentPhase += dPhase;
+            
+            if (Math.floor(currentPhase) > Math.floor(prevPhase)) {
+                const fraction = (Math.ceil(prevPhase) - prevPhase) / dPhase;
+                const exactTime = t + fraction * dt;
+                currentCount++;
+                const captureValue = exactTime % MAX_COUNTER_MS;
+                
+                const event = {
+                    time: exactTime,
+                    count: currentCount,
+                    captureValue: captureValue
+                };
+                interrupts.push(event);
+                pulses.push(event);
+            }
+        }
+        
+        // Control Loop with 0 RPM logic
+        let controlPoints = [];
+        for (let t = 0; t <= maxTime; t += controlPeriod) {
+            const latestInterrupt = interrupts.filter(i => i.time <= t).pop();
+            
+            let calculatedPeriod = 0;
+            let calculatedRpm = 0;
+
+            // 0 RPM Timeout Logic
+            // If time since last pulse > 50ms, then RPM is 0.
+            const timeSinceLastPulse = latestInterrupt ? (t - latestInterrupt.time) : 999;
+
+            if (timeSinceLastPulse > 50) {
+                // Timeout! 0 RPM.
+                calculatedRpm = 0;
+                calculatedPeriod = 0; // Or indicate timeout
+            } else if (latestInterrupt) {
+                // Normal Calculation
+                const targetPrevCount = latestInterrupt.count - avgCount;
+                const prevInterrupt = interrupts.find(i => i.count === targetPrevCount);
+
+                if (prevInterrupt) {
+                    const deltaTime = latestInterrupt.time - prevInterrupt.time;
+                    const avgTime = deltaTime / avgCount;
+                    
+                    if (avgTime > 0) {
+                        calculatedPeriod = avgTime;
+                        calculatedRpm = (1000 / avgTime) * 60 / teeth;
+                    }
+                }
+            }
+
+            controlPoints.push({
+                time: t,
+                avgTime: calculatedPeriod,
+                rpm: calculatedRpm
+            });
+        }
+        
+        const visiblePulses = pulses.filter(i => i.time >= -startInterval * (avgCount+2) && i.time <= maxTime);
+
+        return {
+            interrupts: visiblePulses,
+            pulses: visiblePulses,
+            controlPoints: controlPoints
+        };
+    }
+
+    // --- Drawing Helpers ---
+
+    function timeToX(t, width, maxTime) {
+        return MARGIN.left + (t / maxTime) * (width - MARGIN.left - MARGIN.right);
+    }
+
+    // Calculates vertical position info for a row
+    function getRowGeometry(rowIndex) {
+        let currentY = MARGIN.top;
+        for (let i = 0; i < rowIndex; i++) {
+            currentY += (ROWS[i].height || DEFAULT_ROW_HEIGHT);
+        }
+        const height = ROWS[rowIndex].height || DEFAULT_ROW_HEIGHT;
+        return {
+            top: currentY,
+            bottom: currentY + height,
+            height: height,
+            center: currentY + height / 2
+        };
+    }
+
+    function getRowCenterY(rowIndex) {
+        return getRowGeometry(rowIndex).center;
+    }
+
+    function drawLayout(width, maxTime) {
+        ctx.font = '12px Arial';
+        ctx.textAlign = 'right';
+        ctx.textBaseline = 'middle';
+        ctx.lineWidth = 1;
+
+        ROWS.forEach((row, index) => {
+            const geom = getRowGeometry(index);
+            const y = geom.top;
+            
+            // Separator (Top of row)
+            ctx.beginPath();
+            ctx.moveTo(MARGIN.left, y);
+            ctx.lineTo(width - MARGIN.right, y);
+            ctx.strokeStyle = '#ddd';
+            ctx.stroke();
+
+            // Label
+            ctx.fillStyle = row.editable ? '#007bff' : '#333';
+            ctx.fillText(row.label, MARGIN.left - 10, geom.center);
+            
+            if (row.editable) {
+                 ctx.font = '10px Arial';
+                 ctx.fillText("(ドラッグで編集)", MARGIN.left - 10, geom.center + 12);
+                 ctx.font = '12px Arial';
+            }
+        });
+
+        // Bottom border
+        const lastGeom = getRowGeometry(ROWS.length - 1);
+        const bottomY = lastGeom.bottom;
+        ctx.beginPath();
+        ctx.moveTo(MARGIN.left, bottomY);
+        ctx.lineTo(width - MARGIN.right, bottomY);
+        ctx.strokeStyle = '#ddd';
+        ctx.stroke();
+
+        // Grid & X Labels
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'top';
+        const steps = 10;
+        for (let i = 0; i <= steps; i++) {
+            const t = (maxTime / steps) * i;
+            const x = timeToX(t, width, maxTime);
+            
+            ctx.beginPath();
+            ctx.moveTo(x, MARGIN.top);
+            ctx.lineTo(x, bottomY);
+            ctx.strokeStyle = '#f5f5f5';
+            ctx.stroke();
+
+            ctx.fillStyle = '#666';
+            ctx.fillText(Math.round(t) + 'ms', x, bottomY + 5);
+        }
+    }
+
+    function drawInputRpm(width, maxTime, baseRpm) {
+        const geom = getRowGeometry(0);
+        const plotHeight = geom.height - 20; // Padding
+        
+        const maxViewRpm = Math.max(3000, baseRpm * 2);
+        const minViewRpm = 0;
+        
+        // Draw Bg
+        const topY = geom.top + 10;
+        const bottomY = geom.bottom - 10;
+        
+        ctx.fillStyle = '#fafafa';
+        ctx.fillRect(MARGIN.left, topY, width - MARGIN.left - MARGIN.right, plotHeight);
+
+        const getY = (rpm) => bottomY - ((rpm - minViewRpm) / (maxViewRpm - minViewRpm)) * plotHeight;
+
+        // Draw Profile
+        ctx.beginPath();
+        ctx.strokeStyle = '#007bff';
+        ctx.lineWidth = 2;
+        
+        for (let t = 0; t <= maxTime; t++) {
+             const x = timeToX(t, width, maxTime);
+             const rpm = rpmProfile[t] || baseRpm;
+             const y = getY(rpm);
+             if (t === 0) ctx.moveTo(x, y);
+             else ctx.lineTo(x, y);
+        }
+        ctx.stroke();
+        
+        // Draw Base RPM Line
+        const yBaseLine = getY(baseRpm);
+        ctx.beginPath();
+        ctx.strokeStyle = '#ccc';
+        ctx.setLineDash([2, 4]);
+        ctx.moveTo(MARGIN.left, yBaseLine);
+        ctx.lineTo(width - MARGIN.right, yBaseLine);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        
+        // Max/Min labels
+        ctx.fillStyle = '#999';
+        ctx.font = '9px Arial';
+        ctx.textAlign = 'right';
+        ctx.fillText(Math.round(maxViewRpm) + ' rpm', MARGIN.left - 5, topY + 5);
+        ctx.fillText('0 rpm', MARGIN.left - 5, bottomY - 5);
+    }
+
+    // 1. Pulse
+    function drawPulse(data, width, maxTime) {
+        const geom = getRowGeometry(1);
+        const yBase = geom.center;
+        const h = 15;
+
+        ctx.beginPath();
+        ctx.strokeStyle = '#28a745';
+        ctx.lineWidth = 2;
+
+        data.forEach((p, i) => {
+            if (p.time > maxTime) return;
+            const x = timeToX(p.time, width, maxTime);
+            let nextT = (i < data.length - 1) ? data[i+1].time : maxTime + 10;
+            const nextX = timeToX(nextT, width, maxTime);
+
+            if (x >= MARGIN.left) {
+                ctx.moveTo(x, yBase + h);
+                ctx.lineTo(x, yBase - h);
+                const midX = (x + nextX) / 2;
+                ctx.lineTo(midX, yBase - h);
+                ctx.lineTo(midX, yBase + h);
+                ctx.lineTo(nextX, yBase + h);
+            }
+        });
+        ctx.stroke();
+
+        data.forEach((p) => {
+            if (p.time > maxTime) return;
+            const x = timeToX(p.time, width, maxTime);
+            if (x >= MARGIN.left && x <= width - MARGIN.right) {
+                ctx.fillStyle = 'red';
+                ctx.beginPath();
+                ctx.arc(x, yBase - h, 3, 0, Math.PI * 2);
+                ctx.fill();
+            }
+        });
+    }
+
+    // 2. Free Run
+    function drawFreeRunCounter(width, maxTime) {
+        const geom = getRowGeometry(2);
+        const yBase = geom.center;
+        const h = geom.height / 2 - 10;
+        
+        ctx.beginPath();
+        ctx.strokeStyle = '#999';
+        ctx.lineWidth = 1;
+        
+        let t = 0;
+        ctx.beginPath();
+        while (t <= maxTime) {
+            const xStart = timeToX(t, width, maxTime);
+            let nextReset = (Math.floor(t / MAX_COUNTER_MS) + 1) * MAX_COUNTER_MS;
+            let segmentEnd = Math.min(maxTime, nextReset);
+            const xEnd = timeToX(segmentEnd, width, maxTime);
+            
+            const valStart = t % MAX_COUNTER_MS;
+            const yStart = yBase + h - (valStart / MAX_COUNTER_MS) * (2 * h);
+            const yEnd = yBase + h - ((segmentEnd - t + valStart) / MAX_COUNTER_MS) * (2 * h);
+
+            ctx.moveTo(xStart, yStart);
+            ctx.lineTo(xEnd, yEnd);
+            
+            if (segmentEnd === nextReset && segmentEnd <= maxTime) {
+                 ctx.lineTo(xEnd, yBase + h);
+            }
+            t = segmentEnd;
+            if (t >= maxTime) break;
+            t += 0.0001; 
+        }
+        ctx.stroke();
+    }
+
+    // 3. Capture Time
+    function drawCaptureTime(data, width, maxTime) {
+        const geom = getRowGeometry(3);
+        const yBase = geom.center;
+        const h = geom.height / 2 - 10;
+        
+        ctx.font = '10px monospace';
+        ctx.textAlign = 'center';
+        
+        data.forEach(p => {
+            if (p.time >= 0 && p.time <= maxTime) {
+                const x = timeToX(p.time, width, maxTime);
+                const y = yBase + h - (p.captureValue / MAX_COUNTER_MS) * (2 * h);
+                
+                ctx.beginPath();
+                ctx.fillStyle = '#007bff';
+                ctx.arc(x, y, 3, 0, Math.PI * 2);
+                ctx.fill();
+                
+                ctx.beginPath();
+                ctx.moveTo(x, y);
+                ctx.lineTo(x, yBase + h + 5);
+                ctx.strokeStyle = 'rgba(0, 123, 255, 0.3)';
+                ctx.setLineDash([2, 2]);
+                ctx.stroke();
+                ctx.setLineDash([]);
+                
+                // Shift text down to avoid overlap if possible, but these points are sparse
+                ctx.fillStyle = '#333';
+                ctx.fillText(p.captureValue.toFixed(1), x, yBase + h + 12);
+            }
+        });
+    }
+
+    // 4. Counter
+    function drawCounter(data, width, maxTime) {
+        const geom = getRowGeometry(4);
+        const padding = 15;
+        const plotHeight = geom.height - padding * 2;
+        const yBase = geom.bottom - padding;
+        
+        if (data.length === 0) return;
+        const getY = (count) => yBase - ((count % 10) / 10) * plotHeight;
+
+        ctx.beginPath();
+        ctx.strokeStyle = '#ff9800';
+        ctx.lineWidth = 2;
+
+        let firstVisible = data.find(p => p.time >= 0);
+        let startIndex = data.indexOf(firstVisible);
+        let prevCount = (startIndex > 0) ? data[startIndex - 1].count : data[0].count;
+        
+        ctx.moveTo(MARGIN.left, getY(prevCount));
+
+        data.forEach(p => {
+            if (p.time > maxTime) return;
+            if (p.time < 0) return;
+
+            const x = timeToX(p.time, width, maxTime);
+            const yCurrent = getY(p.count - 1);
+            const yNext = getY(p.count);
+
+            ctx.lineTo(x, yCurrent);
+            ctx.lineTo(x, yNext);
+        });
+        ctx.lineTo(width - MARGIN.right, getY(data[data.length-1].count));
+        ctx.stroke();
+
+        ctx.fillStyle = '#333';
+        ctx.font = '10px Arial';
+        ctx.textAlign = 'left'; 
+        data.forEach(p => {
+            if (p.time > maxTime) return;
+            if (p.time < 0) return;
+            const x = timeToX(p.time, width, maxTime);
+            const yNext = getY(p.count);
+            
+            // Adjust text position: move up and right to avoid line
+            ctx.fillText(p.count, x + 3, yNext - 5);
+        });
+        ctx.textAlign = 'center'; // Reset
+    }
+
+    // 5. Avg Time
+    function drawAvgTime(data, width, maxTime) {
+        const geom = getRowGeometry(5);
+        const yBase = geom.center;
+
+        ctx.strokeStyle = '#9c27b0';
+        ctx.lineWidth = 2;
+
+        if (data.length === 0) return;
+
+        for (let i = 0; i < data.length; i++) {
+            const p = data[i];
+            const x = timeToX(p.time, width, maxTime);
+            let nextX = (i < data.length - 1) ? timeToX(data[i+1].time, width, maxTime) : width - MARGIN.right;
+            
+            // Grid line
+            ctx.beginPath();
+            ctx.strokeStyle = 'rgba(0, 0, 255, 0.3)';
+            ctx.setLineDash([4, 4]);
+            ctx.moveTo(x, MARGIN.top);
+            // Draw all the way down
+            const lastGeom = getRowGeometry(ROWS.length - 1);
+            ctx.lineTo(x, lastGeom.bottom);
+            ctx.stroke();
+            ctx.setLineDash([]);
+            
+            // Value line
+            ctx.beginPath();
+            ctx.strokeStyle = '#9c27b0';
+            ctx.lineWidth = 2;
+            ctx.moveTo(x, yBase);
+            ctx.lineTo(nextX, yBase);
+            ctx.stroke();
+
+            // Text: Display above the line
+            if (x < width - MARGIN.right) {
+                ctx.fillStyle = '#9c27b0';
+                ctx.font = '11px Arial';
+                ctx.textAlign = 'left';
+                ctx.fillText(p.avgTime.toFixed(2) + 'ms', x + 5, yBase - 8);
+            }
+        }
+        ctx.textAlign = 'center';
+    }
+
+    // 6. Calc RPM
+    function drawCalculatedRPM(data, width, maxTime, targetRpm) {
+        const geom = getRowGeometry(6);
+        const padding = 15;
+        const plotHeight = geom.height - padding * 2;
+        const yBase = geom.bottom - padding;
+        
+        const maxViewRpm = Math.max(3000, targetRpm * 2);
+        const minViewRpm = 0;
+
+        ctx.strokeStyle = '#007bff';
+        ctx.lineWidth = 2;
+
+        function getY(val) {
+            let norm = (val - minViewRpm) / (maxViewRpm - minViewRpm);
+            norm = Math.max(0, Math.min(1, norm));
+            return yBase - (norm * plotHeight);
+        }
+
+        ctx.beginPath();
+        if (data.length > 0) ctx.moveTo(MARGIN.left, getY(data[0].rpm));
+
+        for (let i = 0; i < data.length - 1; i++) {
+            const p = data[i];
+            const nextP = data[i+1];
+            const x = timeToX(p.time, width, maxTime);
+            const nextX = timeToX(nextP.time, width, maxTime);
+            const y = getY(p.rpm);
+            const nextY = getY(nextP.rpm);
+
+            if (i===0) ctx.lineTo(x, y);
+            ctx.lineTo(nextX, y);
+            ctx.lineTo(nextX, nextY);
+            
+            // Text: Display above the line
+            ctx.fillStyle = '#007bff';
+            ctx.textAlign = 'left';
+            ctx.fillText(Math.round(p.rpm), x + 5, y - 8);
+        }
+        ctx.stroke();
+        ctx.textAlign = 'center';
+    }
+
+    // Initialize
+    Object.values(inputs).forEach(input => input.addEventListener('input', () => {
+        if (input === inputs.scale) initRpmProfile();
+        draw();
+    }));
+    
+    resetBtn.addEventListener('click', resetRpmProfile);
+    window.addEventListener('resize', draw);
+    
+    initRpmProfile();
+    draw();
+
+</script>
+</body>
+</html>
