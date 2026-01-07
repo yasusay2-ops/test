@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>回転数センサ タイミングチャート作成ツール v5</title>
+    <title>回転数センサ タイミングチャート作成ツール v6</title>
     <style>
         :root {
             --bg-color: #f4f4f9;
@@ -166,7 +166,7 @@
 <body>
 
     <div class="header">
-        <h1>回転数センサ 制御フロー タイミングチャート v5</h1>
+        <h1>回転数センサ 制御フロー タイミングチャート v6</h1>
         <div class="header-buttons">
             <button id="exportBtn" class="btn-success">PNG保存</button>
             <button id="darkModeBtn" class="btn-secondary">ダークモード</button>
@@ -198,6 +198,11 @@
                 <input type="number" id="timeScaleInput" value="100" min="10" max="1000">
             </div>
             <div class="control-group">
+                <label for="filterTauInput">フィルタ時定数 (ms)</label>
+                <input type="number" id="filterTauInput" value="20" min="0" max="500" step="1">
+                <span class="note">一次遅れフィルタ (0で無効)</span>
+            </div>
+            <div class="control-group">
                 <button id="resetRpmBtn">回転数リセット</button>
             </div>
         </div>
@@ -216,7 +221,7 @@
                 3. エッジ検出時刻: 割込発生瞬間のフリーランカウンタ値<br>
                 4. 累積カウンター: 受信パルス総数 (ステップ表示)<br>
                 5. パルス平均時間: 制御周期毎に算出<br>
-                6. 計算回転数: 制御周期毎に更新 (50msパルス無しで0rpm判定)
+                6. 回転数比較: <span style="color:#28a745">緑=入力回転数</span> / <span style="color:#007bff">青=計算回転数</span> / <span style="color:#ff6b6b">赤=フィルタ後</span>
             </div>
         </div>
     </div>
@@ -237,7 +242,8 @@
         teeth: document.getElementById('teethInput'),
         period: document.getElementById('controlPeriodInput'),
         avg: document.getElementById('avgPulseInput'),
-        scale: document.getElementById('timeScaleInput')
+        scale: document.getElementById('timeScaleInput'),
+        filterTau: document.getElementById('filterTauInput')
     };
 
     // Constants for Layout
@@ -252,7 +258,7 @@
         { id: 'capture', label: '3. パルスエッジ検出時刻' },
         { id: 'count', label: '4. 累積カウンター' },
         { id: 'avgTime', label: '5. パルス平均時間 (ms)' },
-        { id: 'calcRpm', label: '6. 計算回転数 (RPM)' }
+        { id: 'calcRpm', label: '6. 回転数比較', height: 140 }
     ];
 
     // Counter Specs
@@ -382,6 +388,7 @@
         const avgCount = parseInt(inputs.avg.value);
         const maxTime = parseFloat(inputs.scale.value);
         const baseRpm = parseFloat(inputs.rpm.value);
+        const filterTau = parseFloat(inputs.filterTau.value);
 
         if (!rpmProfile.length || Math.abs(rpmProfile.length - (Math.ceil(maxTime)+1)) > 2) {
              resetRpmProfile();
@@ -398,7 +405,7 @@
         ctx.fillStyle = isDarkMode ? '#1e1e2f' : '#ffffff';
         ctx.fillRect(0, 0, width, totalHeight);
 
-        const simulationData = simulate(teeth, controlPeriod, avgCount, maxTime);
+        const simulationData = simulate(teeth, controlPeriod, avgCount, maxTime, filterTau);
 
         drawLayout(width, maxTime);
         drawInputRpm(width, maxTime, baseRpm);
@@ -410,7 +417,7 @@
         drawCalculatedRPM(simulationData.controlPoints, width, maxTime, baseRpm);
     }
 
-    function simulate(teeth, controlPeriod, avgCount, maxTime) {
+    function simulate(teeth, controlPeriod, avgCount, maxTime, filterTau) {
         let interrupts = [];
         let pulses = [];
 
@@ -463,6 +470,8 @@
         }
 
         let controlPoints = [];
+        let filteredRpm = startRpm; // 初期値
+
         for (let t = 0; t <= maxTime; t += controlPeriod) {
             const latestInterrupt = interrupts.filter(i => i.time <= t).pop();
 
@@ -489,10 +498,24 @@
                 }
             }
 
+            // 一次遅れフィルタ: y[n] = y[n-1] + (dt/tau) * (x[n] - y[n-1])
+            // alpha = dt / (tau + dt), where tau is time constant
+            if (filterTau > 0) {
+                const alpha = controlPeriod / (filterTau + controlPeriod);
+                filteredRpm = filteredRpm + alpha * (calculatedRpm - filteredRpm);
+            } else {
+                filteredRpm = calculatedRpm;
+            }
+
+            // 入力回転数も記録
+            const inputRpm = getRpmAt(t);
+
             controlPoints.push({
                 time: t,
                 avgTime: calculatedPeriod,
-                rpm: calculatedRpm
+                rpm: calculatedRpm,
+                filteredRpm: filteredRpm,
+                inputRpm: inputRpm
             });
         }
 
@@ -821,12 +844,10 @@
         const padding = 15;
         const plotHeight = geom.height - padding * 2;
         const yBase = geom.bottom - padding;
+        const topY = geom.top + padding;
 
         const maxViewRpm = Math.max(3000, targetRpm * 2);
         const minViewRpm = 0;
-
-        ctx.strokeStyle = isDarkMode ? '#4dabf7' : '#007bff';
-        ctx.lineWidth = 2;
 
         function getY(val) {
             let norm = (val - minViewRpm) / (maxViewRpm - minViewRpm);
@@ -834,7 +855,29 @@
             return yBase - (norm * plotHeight);
         }
 
+        // 背景
+        ctx.fillStyle = isDarkMode ? '#252538' : '#fafafa';
+        ctx.fillRect(MARGIN.left, topY, width - MARGIN.left - MARGIN.right, plotHeight);
+
+        // 1. 入力回転数（緑、破線）
         ctx.beginPath();
+        ctx.strokeStyle = '#28a745';
+        ctx.lineWidth = 2;
+        ctx.setLineDash([4, 4]);
+        for (let i = 0; i < data.length; i++) {
+            const p = data[i];
+            const x = timeToX(p.time, width, maxTime);
+            const y = getY(p.inputRpm);
+            if (i === 0) ctx.moveTo(x, y);
+            else ctx.lineTo(x, y);
+        }
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        // 2. 計算回転数（青、ステップ状）
+        ctx.beginPath();
+        ctx.strokeStyle = isDarkMode ? '#4dabf7' : '#007bff';
+        ctx.lineWidth = 2;
         if (data.length > 0) ctx.moveTo(MARGIN.left, getY(data[0].rpm));
 
         for (let i = 0; i < data.length - 1; i++) {
@@ -848,12 +891,36 @@
             if (i===0) ctx.lineTo(x, y);
             ctx.lineTo(nextX, y);
             ctx.lineTo(nextX, nextY);
-
-            ctx.fillStyle = isDarkMode ? '#4dabf7' : '#007bff';
-            ctx.textAlign = 'left';
-            ctx.fillText(Math.round(p.rpm), x + 5, y - 8);
         }
         ctx.stroke();
+
+        // 3. フィルタ後回転数（赤、実線）
+        ctx.beginPath();
+        ctx.strokeStyle = '#ff6b6b';
+        ctx.lineWidth = 2;
+        if (data.length > 0) ctx.moveTo(MARGIN.left, getY(data[0].filteredRpm));
+
+        for (let i = 0; i < data.length - 1; i++) {
+            const p = data[i];
+            const nextP = data[i+1];
+            const x = timeToX(p.time, width, maxTime);
+            const nextX = timeToX(nextP.time, width, maxTime);
+            const y = getY(p.filteredRpm);
+            const nextY = getY(nextP.filteredRpm);
+
+            if (i===0) ctx.lineTo(x, y);
+            ctx.lineTo(nextX, y);
+            ctx.lineTo(nextX, nextY);
+        }
+        ctx.stroke();
+
+        // Y軸ラベル
+        ctx.fillStyle = isDarkMode ? '#aaa' : '#999';
+        ctx.font = '9px Arial';
+        ctx.textAlign = 'right';
+        ctx.fillText(Math.round(maxViewRpm) + ' rpm', MARGIN.left - 5, topY + 5);
+        ctx.fillText('0 rpm', MARGIN.left - 5, yBase - 5);
+
         ctx.textAlign = 'center';
     }
 
