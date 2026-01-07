@@ -85,46 +85,53 @@
 
         .controls {
             background: var(--panel-bg);
-            padding: 20px;
+            padding: 10px 15px;
             border-radius: 8px;
             box-shadow: 0 2px 5px rgba(0,0,0,0.1);
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 15px;
-            align-items: end;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            align-items: center;
             transition: background-color 0.3s;
         }
 
         .control-group {
             display: flex;
-            flex-direction: column;
+            flex-direction: row;
+            align-items: center;
+            gap: 5px;
         }
 
         .control-group label {
-            font-size: 0.9rem;
-            margin-bottom: 5px;
+            font-size: 0.8rem;
             font-weight: bold;
             color: var(--text-color);
+            white-space: nowrap;
         }
 
         .control-group input {
-            padding: 8px;
+            padding: 5px 8px;
             border: 1px solid var(--border-color);
             border-radius: 4px;
-            font-size: 1rem;
+            font-size: 0.9rem;
+            width: 70px;
             background-color: var(--panel-bg);
             color: var(--text-color);
             transition: background-color 0.3s, color 0.3s, border-color 0.3s;
         }
 
+        .control-group .note {
+            display: none;
+        }
+
         button {
-            padding: 10px 15px;
+            padding: 6px 12px;
             background-color: var(--accent-color);
             color: white;
             border: none;
             border-radius: 4px;
             cursor: pointer;
-            font-size: 1rem;
+            font-size: 0.85rem;
             transition: background 0.2s;
         }
 
@@ -858,6 +865,20 @@
         // 背景
         ctx.fillStyle = isDarkMode ? '#252538' : '#fafafa';
         ctx.fillRect(MARGIN.left, topY, width - MARGIN.left - MARGIN.right, plotHeight);
+
+        // 制御周期の縦線（背景の上に描画）
+        ctx.strokeStyle = isDarkMode ? 'rgba(100, 100, 255, 0.4)' : 'rgba(0, 0, 255, 0.3)';
+        ctx.setLineDash([4, 4]);
+        ctx.lineWidth = 1;
+        for (let i = 0; i < data.length; i++) {
+            const p = data[i];
+            const x = timeToX(p.time, width, maxTime);
+            ctx.beginPath();
+            ctx.moveTo(x, topY);
+            ctx.lineTo(x, yBase);
+            ctx.stroke();
+        }
+        ctx.setLineDash([]);
 
         // 1. 入力回転数（緑、破線）
         ctx.beginPath();
